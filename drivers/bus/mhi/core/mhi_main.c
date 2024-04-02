@@ -1404,9 +1404,8 @@ int mhi_process_tsync_ev_ring(struct mhi_controller *mhi_cntrl,
 
 	spin_lock_bh(&mhi_event->lock);
 	if (!is_valid_ring_ptr(ev_ring, er_ctxt->rp)) {
-		MHI_ERR(
-			"Event ring rp points outside of the event ring or unalign rp %llx\n",
-			er_ctxt->rp);
+		MHI_ERR("Event ring rp points outside of the event ring or unalign rp %llx\n",
+				er_ctxt->rp);
 		spin_unlock_bh(&mhi_event->lock);
 		return 0;
 	}
@@ -1504,9 +1503,14 @@ int mhi_process_bw_scale_ev_ring(struct mhi_controller *mhi_cntrl,
 
 	spin_lock_bh(&mhi_event->lock);
 	if (!is_valid_ring_ptr(ev_ring, er_ctxt->rp)) {
+<<<<<<< HEAD
 		MHI_ERR(
 			"Event ring rp points outside of the event ring or unalign rp %llx\n",
 			er_ctxt->rp);
+=======
+		MHI_ERR("Event ring rp points outside of the event ring or unalign rp %llx\n",
+				er_ctxt->rp);
+>>>>>>> LA.UM.9.16.r1-16700-MANNAR.QSSI12.0
 		spin_unlock_bh(&mhi_event->lock);
 		return 0;
 	}
