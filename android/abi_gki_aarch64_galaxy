@@ -1375,7 +1375,6 @@
   is_console_locked
   iterate_dir
   iterate_fd
-  jiffies
   jiffies64_to_msecs
   jiffies_64_to_clock_t
   jiffies_to_msecs

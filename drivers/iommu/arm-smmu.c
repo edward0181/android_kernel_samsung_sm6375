@@ -1349,6 +1349,7 @@ int iommu_get_fault_ids(struct iommu_domain *domain,
 }
 EXPORT_SYMBOL(iommu_get_fault_ids);
 
+static __always_inline void __sec_debug_bug_on_enosys(struct arm_smmu_domain *smmu_domain);
 static irqreturn_t arm_smmu_context_fault(int irq, void *dev)
 {
 	int flags, ret, tmp;
@@ -1468,7 +1469,11 @@ static irqreturn_t arm_smmu_context_fault(int irq, void *dev)
 		if (!non_fatal_fault) {
 			dev_err(smmu->dev,
 				"Unhandled arm-smmu context fault!\n");
+#if IS_ENABLED(CONFIG_SEC_DEBUG)
+			__sec_debug_bug_on_enosys(smmu_domain);
+#else
 			BUG();
+#endif
 		}
 	}
 
@@ -5339,3 +5344,65 @@ module_exit(arm_smmu_exit);
 MODULE_DESCRIPTION("IOMMU API for ARM architected SMMU implementations");
 MODULE_AUTHOR("Will Deacon <will@kernel.org>");
 MODULE_LICENSE("GPL v2");
+
+static const char *__arm_smmu_get_devname(struct device *dev)
+{
+	const char *token;
+	const char *delim = ":,.";
+	const char *devname;
+
+	token = dev_name(dev);
+	if (!token)
+		return "No Name";
+
+	pr_info("smmu client name - %s\n", token);
+
+	if (dev_is_pci(dev))
+		return token;
+
+	while (true) {
+		devname = token;
+		token = strpbrk(token, delim);
+		if (!token)
+			break;
+		token++;	/* skip delimiter */
+	}
+
+	return devname;
+}
+
+static const char *arm_smmu_get_devname(const struct arm_smmu_domain *smmu_domain,
+		u32 sid)
+{
+	struct iommu_fwspec *fwspec = NULL;
+	struct device* dev = NULL;
+	unsigned int i;
+
+	if (smmu_domain->dev)
+		fwspec = dev_iommu_fwspec_get(smmu_domain->dev);
+
+	for (i = 0; fwspec && i < fwspec->num_ids; i++) {
+		if ((fwspec->ids[i] & smmu_domain->smmu->streamid_mask) == sid) {
+			dev = smmu_domain->dev;
+			break;
+		}
+	}
+
+	if (!fwspec || !dev)
+		return "No Device";
+
+	return __arm_smmu_get_devname(dev);
+}
+
+static __always_inline void __sec_debug_bug_on_enosys(struct arm_smmu_domain *smmu_domain)
+{
+	struct arm_smmu_device *smmu = smmu_domain->smmu;
+	struct arm_smmu_cfg *cfg = &smmu_domain->cfg;
+	u32 frsynra, sid;
+
+	frsynra = arm_smmu_gr1_read(smmu, ARM_SMMU_GR1_CBFRSYNRA(cfg->cbndx));
+	sid = FIELD_GET(CBFRSYNRA_SID, frsynra);
+
+	panic("%s SMMU Fault - SID=0x%x", arm_smmu_get_devname(smmu_domain, sid), sid);
+
+}

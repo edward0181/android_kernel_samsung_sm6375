@@ -19,13 +19,24 @@
 #include <linux/list.h>
 #include <linux/dma-mapping.h>
 
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+#include <linux/usb/composite.h>
+#include <linux/usblog_proc_notify.h>
+#endif
+
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/usb_notify.h>
+#include <linux/workqueue.h>
 
 #include "debug.h"
 #include "core.h"
 #include "gadget.h"
 #include "io.h"
+
+#if IS_ENABLED(CONFIG_BATTERY_SAMSUNG)
+#include "../../battery/common/sec_charging_common.h"
+#endif
 
 #define DWC3_ALIGN_FRAME(d, n)	(((d)->frame_number + ((d)->interval * (n))) \
 					& ~((d)->interval - 1))
@@ -404,6 +415,11 @@ int dwc3_send_gadget_ep_cmd(struct dwc3_ep *dep, unsigned cmd,
 	dwc3_writel(dep->regs, DWC3_DEPCMDPAR1, params->param1);
 	dwc3_writel(dep->regs, DWC3_DEPCMDPAR2, params->param2);
 
+	dbg_log_string("UGMI: MEM BAR");
+	/*
+	 * some time to get ready before addressing all the registers to prevent SMMU fault.
+	 */
+	udelay(5);
 	/*
 	 * Synopsys Databook 2.60a states in section 6.3.2.5.6 of that if we're
 	 * not relying on XferNotReady, we can make use of a special "No
@@ -425,7 +441,17 @@ int dwc3_send_gadget_ep_cmd(struct dwc3_ep *dep, unsigned cmd,
 	else
 		cmd |= DWC3_DEPCMD_CMDACT;
 
+	dbg_log_string("UGMI: GCTL: %x", dwc3_readl(dwc->regs, DWC3_GCTL));
+	dbg_log_string("UGMI: DCTL: %x", dwc3_readl(dwc->regs, DWC3_DCTL));
+
 	dwc3_writel(dep->regs, DWC3_DEPCMD, cmd);
+	dbg_log_string("DEP_NUM: %d :: DEPCMD=0x%08x | DWC3_DEPCMDPAR 0|1|2 = 0x%08x | 0x%08x | 0x%08x |%x |%x |%x",
+		dep->number, dwc3_readl(dep->regs, DWC3_DEPCMD),
+		dwc3_readl(dep->regs, DWC3_DEPCMDPAR0),
+		dwc3_readl(dep->regs, DWC3_DEPCMDPAR1),
+		dwc3_readl(dep->regs, DWC3_DEPCMDPAR2),
+		params->param0, params->param1, params->param2);
+
 	do {
 		reg = dwc3_readl(dep->regs, DWC3_DEPCMD);
 		if (!(reg & DWC3_DEPCMD_CMDACT)) {
@@ -2351,6 +2377,8 @@ static int dwc3_gadget_run_stop(struct dwc3 *dwc, int is_on, int suspend)
 
 	dbg_event(0xFF, "run_stop", is_on);
 	reg = dwc3_readl(dwc->regs, DWC3_DCTL);
+	pr_info("usb: %s is_on: %d\n", __func__, is_on);
+
 	if (is_on) {
 		if (dwc->revision <= DWC3_REVISION_187A) {
 			reg &= ~DWC3_DCTL_TRGTULST_MASK;
@@ -2447,6 +2475,14 @@ static int dwc3_gadget_run_stop_util(struct dwc3 *dwc)
 		if (dwc->vbus_active && dwc->softconnect) {
 			ret = dwc3_gadget_run_stop(dwc, true, false);
 			dwc->gadget_state = DWC3_GADGET_ACTIVE;
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+			if (ret == 0)
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:EN:SUCCESS", NULL);
+			else
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:EN:FAIL", NULL);
+#endif
 			break;
 		}
 
@@ -2468,6 +2504,14 @@ static int dwc3_gadget_run_stop_util(struct dwc3 *dwc)
 		if (dwc->vbus_active) {
 			ret = dwc3_gadget_run_stop(dwc, true, false);
 			dwc->gadget_state = DWC3_GADGET_ACTIVE;
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+			if (ret == 0)
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:EN:SUCCESS", NULL);
+			else
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:EN:FAIL", NULL);
+#endif
 		}
 		break;
 	case DWC3_GADGET_CABLE_CONN:
@@ -2479,6 +2523,14 @@ static int dwc3_gadget_run_stop_util(struct dwc3 *dwc)
 		if (dwc->softconnect) {
 			ret = dwc3_gadget_run_stop(dwc, true, false);
 			dwc->gadget_state = DWC3_GADGET_ACTIVE;
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+			if (ret == 0)
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:EN:SUCCESS", NULL);
+			else
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:EN:FAIL", NULL);
+#endif
 		}
 		break;
 	case DWC3_GADGET_ACTIVE:
@@ -2524,6 +2576,7 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	spin_lock_irqsave(&dwc->lock, flags);
 	dwc->softconnect = is_on;
 
+	pr_info("usb: %s is_on: %d\n", __func__, is_on);
 	if (((dwc->dr_mode > USB_DR_MODE_HOST) && !dwc->vbus_active)
 			|| !dwc->gadget_driver || (dwc->err_evt_seen &&
 				dwc->softconnect)) {
@@ -2590,6 +2643,23 @@ static int dwc3_gadget_pullup(struct usb_gadget *g, int is_on)
 	dwc3_notify_event(dwc, DWC3_CONTROLLER_NOTIFY_OTG_EVENT, 0);
 
 	ret = dwc3_gadget_run_stop_util(dwc);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+	if (ret == 0) {
+		if (is_on)
+			store_usblog_notify(NOTIFY_USBSTATE,
+					(void *)"USB_STATE=PULLUP:EN:SUCCESS", NULL);
+		else
+			store_usblog_notify(NOTIFY_USBSTATE,
+					(void *)"USB_STATE=PULLUP:DIS:SUCCESS", NULL);
+	} else {
+		if (is_on)
+			store_usblog_notify(NOTIFY_USBSTATE,
+					(void *)"USB_STATE=PULLUP:EN:FAIL", NULL);
+		else
+			store_usblog_notify(NOTIFY_USBSTATE,
+					(void *)"USB_STATE=PULLUP:DIS:FAIL", NULL);
+	}
+#endif
 	spin_unlock_irqrestore(&dwc->lock, flags);
 	if (!is_on && ret == -ETIMEDOUT) {
 		/*
@@ -2722,6 +2792,14 @@ static int dwc3_gadget_vbus_session(struct usb_gadget *_gadget, int is_active)
 	 */
 	if (!dwc->vbus_active) {
 		dev_dbg(dwc->dev, "calling disconnect from %s\n", __func__);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+			if (ret == 0)
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:DIS:SUCCESS", NULL);
+			else
+				store_usblog_notify(NOTIFY_USBSTATE,
+						(void *)"USB_STATE=VBUS:DIS:FAIL", NULL);
+#endif
 		dwc3_gadget_disconnect_interrupt(dwc);
 	}
 
@@ -2732,6 +2810,14 @@ static int dwc3_gadget_vbus_session(struct usb_gadget *_gadget, int is_active)
 	}
 
 	enable_irq(dwc->irq);
+
+	if (dwc->rst_err_noti) {
+		dwc->event_state = RELEASE;
+		dwc->rst_err_noti = false;
+		schedule_delayed_work(&dwc->usb_event_work, msecs_to_jiffies(0));
+	}
+	dwc->rst_err_cnt = 0;
+	dwc->acc_dev_status = 0;
 
 	return 0;
 }
@@ -2817,6 +2903,94 @@ err0:
 	return ret;
 }
 
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+static void update_usb_gadet_function(struct usb_function *f, struct dwc3 *dwc)
+{
+	if (!strcmp(f->name, "mtp")) {
+		dwc->usb_function_info |= GADGET_MTP;
+		goto ret;
+	}
+	if (!strcmp(f->name, "acm")) {
+		dwc->usb_function_info |= GADGET_ACM;
+		goto ret;
+	}
+	if (!strcmp(f->name, "conn_gadget")) {
+		dwc->usb_function_info |= GADGET_CONN_GADGET;
+		goto ret;
+	}
+
+	if (!strcmp(f->name, "Function FS Gadget")) {
+		dwc->usb_function_info |= GADGET_ADB;
+		goto ret;
+	}
+	if (!strcmp(f->name, "rndis")) {
+		dwc->usb_function_info |= GADGET_RNDIS;
+		goto ret;
+	}
+	if (!strcmp(f->name, "accessory")) {
+		dwc->usb_function_info |= GADGET_ACCESSORY;
+		goto ret;
+	}
+	if (!strcmp(f->name, "gmidi function")) {
+		dwc->usb_function_info |= GADGET_MIDI;
+		goto ret;
+	}
+	if (!strcmp(f->name, "dm")) {
+		dwc->usb_function_info |= GADGET_DM;
+		goto ret;
+	}
+ret:
+	return;
+}
+static int copy_usb_mode(struct usb_function *f, char *usb_mode)
+{
+	int length;
+
+	length = strlen(f->name);
+	if (length > 3)
+		length = 3;
+
+	if (!strcmp(f->name, "Function FS Gadget"))
+		strncat(usb_mode, "ffs", length);
+	else
+		strncat(usb_mode, f->name, length);
+
+	length += 1;
+	strcat(usb_mode, ",");
+
+	return length;
+}
+
+static void usb_mode_store(struct usb_gadget *gadget)
+{
+	struct usb_composite_dev *cdev;
+	struct usb_configuration	*c;
+	struct usb_function *f;
+	struct dwc3		*dwc = gadget_to_dwc(gadget);
+	char usb_mode[50] = {0,};
+	int length = 0;
+
+	cdev = get_gadget_data(gadget);
+	if (!cdev) {
+		pr_info("usb: %s : cdev is null\n", __func__);
+		return;
+	}
+	list_for_each_entry(c, &cdev->configs, list) {
+		list_for_each_entry(f, &c->functions, list) {
+			update_usb_gadet_function(f, dwc);
+			if (length + strlen(f->name) > sizeof(usb_mode)) {
+				pr_info("usb: %s : overflow usb mode buffer\n", __func__);
+				break;
+			}
+			length += copy_usb_mode(f, usb_mode);
+		}
+		usb_mode[length-1] = 0;
+		store_usblog_notify(NOTIFY_USBMODE_EXTRA, (void *)usb_mode, NULL);
+		pr_info("usb: %s : current usb mode : %s\n", __func__, usb_mode);
+	}
+}
+#endif
+
 static int dwc3_gadget_start(struct usb_gadget *g,
 		struct usb_gadget_driver *driver)
 {
@@ -2845,10 +3019,16 @@ static int dwc3_gadget_start(struct usb_gadget *g,
 	 */
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+	usb_mode_store(g);
+#endif
 	return 0;
 
 err0:
 	spin_unlock_irqrestore(&dwc->lock, flags);
+#if defined(CONFIG_USB_NOTIFY_PROC_LOG)
+	usb_mode_store(g);
+#endif
 	return ret;
 }
 
@@ -2867,6 +3047,8 @@ static int dwc3_gadget_stop(struct usb_gadget *g)
 
 	spin_lock_irqsave(&dwc->lock, flags);
 	dwc->gadget_driver	= NULL;
+	dwc->usb_function_info = 0;
+	dwc->acc_dev_status = false;
 	dwc->is_remote_wakeup_enabled = false;
 	spin_unlock_irqrestore(&dwc->lock, flags);
 
@@ -3692,6 +3874,7 @@ static void dwc3_gadget_disconnect_interrupt(struct dwc3 *dwc)
 {
 	int			reg;
 
+	pr_info("usb: %s\n", __func__);
 	dbg_event(0xFF, "DISCONNECT INT", 0);
 	dev_dbg(dwc->dev, "Notify OTG from %s\n", __func__);
 	dwc->b_suspend = false;
@@ -3710,14 +3893,32 @@ static void dwc3_gadget_disconnect_interrupt(struct dwc3 *dwc)
 	dwc->setup_packet_pending = false;
 	dwc->link_state = DWC3_LINK_STATE_SS_DIS;
 	usb_gadget_set_state(&dwc->gadget, USB_STATE_NOTATTACHED);
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT) && IS_ENABLED(CONFIG_ENABLE_USB_SUSPEND_STATE)
+	dwc->vbus_current = USB_CURRENT_CLEAR;
+#endif
 
 	dwc->connected = false;
 	wake_up_interruptible(&dwc->wait_linkstate);
 }
 
+static void dwc3_gadget_usb_event_work(struct work_struct *work)
+{
+	struct dwc3 *dwc = container_of(work, struct dwc3, usb_event_work.work);
+
+	pr_info("%s, event_state: %d\n", __func__, dwc->event_state);
+
+	if (dwc->event_state)
+		send_usb_err_uevent(USB_ERR_ABNORMAL_RESET, NOTIFY);
+	else
+		send_usb_err_uevent(USB_ERR_ABNORMAL_RESET, RELEASE);
+}
+
 static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 {
 	u32			reg;
+	ktime_t current_time;
+
+	pr_info("usb: %s\n", __func__);
 
 	/*
 	 * Ideally, dwc3_reset_gadget() would trigger the function
@@ -3727,6 +3928,14 @@ static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 	 * transfers here, and avoid allowing of request queuing.
 	 */
 	dwc->connected = false;
+
+	/*
+	 * Clear the susphy bit here to ensure it is not set during
+	 * the course of controller initialisation process.
+	 */
+	reg = dwc3_readl(dwc->regs, DWC3_GUSB3PIPECTL(0));
+	reg &= ~DWC3_GUSB3PIPECTL_SUSPHY;
+	dwc3_writel(dwc->regs, DWC3_GUSB3PIPECTL(0), reg);
 
 	/*
 	 * WORKAROUND: DWC3 revisions <1.88a have an issue which
@@ -3758,6 +3967,10 @@ static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 		if (dwc->setup_packet_pending)
 			dwc3_gadget_disconnect_interrupt(dwc);
 	}
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
+	dwc->vbus_current = USB_CURRENT_UNCONFIGURED;
+	schedule_work(&dwc->set_vbus_current_work);
+#endif
 
 	dbg_event(0xFF, "BUS RESET", dwc->gadget.speed);
 	dev_dbg(dwc->dev, "Notify OTG from %s\n", __func__);
@@ -3804,6 +4017,33 @@ static void dwc3_gadget_reset_interrupt(struct dwc3 *dwc)
 
 	dwc->gadget.speed = USB_SPEED_UNKNOWN;
 	dwc->link_state = DWC3_LINK_STATE_U0;
+	if (dwc->acc_dev_status && (dwc->rst_err_noti == false)) {
+		current_time = ktime_to_ms(ktime_get_boottime());
+
+		if ((dwc->rst_err_cnt == 0) && (dwc->gadget.state < USB_STATE_CONFIGURED)) {
+			if ((current_time - dwc->rst_time_before) < 1000) {
+				dwc->rst_err_cnt++;
+				dwc->rst_time_first = dwc->rst_time_before;
+			}
+		} else {
+			if ((current_time - dwc->rst_time_first) < 1000)
+				dwc->rst_err_cnt++;
+			else
+				dwc->rst_err_cnt = 0;
+		}
+
+		if (dwc->rst_err_cnt > ERR_RESET_CNT) {
+			dwc->event_state = NOTIFY;
+			schedule_delayed_work(&dwc->usb_event_work, msecs_to_jiffies(0));
+			dwc->rst_err_noti = true;
+		}
+
+		pr_info("%s rst_err_cnt: %d, time_current: %d, time_before: %d\n",
+			__func__, dwc->rst_err_cnt, current_time, dwc->rst_time_before);
+
+		dwc->rst_time_before = current_time;
+	}
+
 	dwc->is_remote_wakeup_enabled = false;
 	wake_up_interruptible(&dwc->wait_linkstate);
 }
@@ -3837,6 +4077,11 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		dwc3_gadget_ep0_desc.wMaxPacketSize = cpu_to_le16(512);
 		dwc->gadget.ep0->maxpacket = 512;
 		dwc->gadget.speed = USB_SPEED_SUPER_PLUS;
+		pr_info("usb: %s (SS+)\n", __func__);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:PSS", NULL);
+#endif
 		break;
 	case DWC3_DSTS_SUPERSPEED:
 		/*
@@ -3858,21 +4103,41 @@ static void dwc3_gadget_conndone_interrupt(struct dwc3 *dwc)
 		dwc3_gadget_ep0_desc.wMaxPacketSize = cpu_to_le16(512);
 		dwc->gadget.ep0->maxpacket = 512;
 		dwc->gadget.speed = USB_SPEED_SUPER;
+		pr_info("usb: %s (SS)\n", __func__);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:SS", NULL);
+#endif
 		break;
 	case DWC3_DSTS_HIGHSPEED:
 		dwc3_gadget_ep0_desc.wMaxPacketSize = cpu_to_le16(64);
 		dwc->gadget.ep0->maxpacket = 64;
 		dwc->gadget.speed = USB_SPEED_HIGH;
+		pr_info("usb: %s (HS)\n", __func__);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:HS", NULL);
+#endif
 		break;
 	case DWC3_DSTS_FULLSPEED:
 		dwc3_gadget_ep0_desc.wMaxPacketSize = cpu_to_le16(64);
 		dwc->gadget.ep0->maxpacket = 64;
 		dwc->gadget.speed = USB_SPEED_FULL;
+		pr_info("usb: %s (FS)\n", __func__);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:FS", NULL);
+#endif
 		break;
 	case DWC3_DSTS_LOWSPEED:
 		dwc3_gadget_ep0_desc.wMaxPacketSize = cpu_to_le16(8);
 		dwc->gadget.ep0->maxpacket = 8;
 		dwc->gadget.speed = USB_SPEED_LOW;
+		pr_info("usb: %s (LS)\n", __func__);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+			(void *)"USB_STATE=ENUM:CONNDONE:LS", NULL);
+#endif
 		break;
 	}
 
@@ -3957,6 +4222,21 @@ static void dwc3_gadget_wakeup_interrupt(struct dwc3 *dwc, bool remote_wakeup)
 	/* For L1 resume case, don't perform resume */
 	if (!remote_wakeup && link_state != DWC3_LINK_STATE_U3)
 		return;
+
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT) && IS_ENABLED(CONFIG_ENABLE_USB_SUSPEND_STATE)
+	if (dwc->vbus_current == USB_CURRENT_SUSPENDED) {
+		if (dwc->gadget.state == USB_STATE_CONFIGURED) {
+			if (dwc->gadget.speed >= USB_SPEED_SUPER)
+				dwc->vbus_current = USB_CURRENT_SUPER_SPEED;
+			else
+				dwc->vbus_current = USB_CURRENT_HIGH_SPEED;
+		} else
+			dwc->vbus_current = USB_CURRENT_UNCONFIGURED;
+		pr_info("usb: %s speed = %d, vbus_current = %d\n",
+				__func__, dwc->gadget.speed, dwc->vbus_current);
+		schedule_work(&dwc->set_vbus_current_work);
+	}
+#endif
 
 	/* Handle bus resume case */
 	dbg_event(0xFF, "notify", 0);
@@ -4075,6 +4355,17 @@ static void dwc3_gadget_suspend_interrupt(struct dwc3 *dwc,
 	dev_dbg(dwc->dev, "%s Entry to %d\n", __func__, next);
 
 	if (dwc->link_state != next && next == DWC3_LINK_STATE_U3) {
+		pr_info("usb: %s\n", __func__);
+
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
+#if IS_ENABLED(CONFIG_ENABLE_USB_SUSPEND_STATE)
+		dwc->vbus_current = USB_CURRENT_SUSPENDED;
+#else
+		dwc->vbus_current = USB_CURRENT_UNCONFIGURED;
+#endif
+		schedule_work(&dwc->set_vbus_current_work);
+#endif
+
 		/*
 		 * When first connecting the cable, even before the initial
 		 * DWC3_DEVICE_EVENT_RESET or DWC3_DEVICE_EVENT_CONNECT_DONE
@@ -4133,6 +4424,10 @@ static void dwc3_gadget_interrupt(struct dwc3 *dwc,
 		break;
 	case DWC3_DEVICE_EVENT_RESET:
 		dwc3_gadget_reset_interrupt(dwc);
+#if IS_ENABLED(CONFIG_USB_NOTIFY_PROC_LOG)
+		store_usblog_notify(NOTIFY_USBSTATE,
+					(void *)"USB_STATE=RESET", NULL);
+#endif
 		dwc->dbg_gadget_events.reset++;
 		break;
 	case DWC3_DEVICE_EVENT_CONNECT_DONE:
@@ -4163,11 +4458,15 @@ static void dwc3_gadget_interrupt(struct dwc3 *dwc,
 			 * Ignore suspend event until the gadget enters into
 			 * USB_STATE_CONFIGURED state.
 			 */
+#if !IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
 			if (dwc->gadget.state >= USB_STATE_CONFIGURED)
+#endif
 				dwc3_gadget_suspend_interrupt(dwc,
 						event->event_info);
+#if !IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
 			else
 				usb_gadget_vbus_draw(&dwc->gadget, 2);
+#endif
 		}
 		break;
 	case DWC3_DEVICE_EVENT_SOF:
@@ -4432,6 +4731,7 @@ int dwc3_gadget_init(struct dwc3 *dwc)
 	}
 
 	dwc->irq_gadget = irq;
+	INIT_DELAYED_WORK(&dwc->usb_event_work, dwc3_gadget_usb_event_work);
 	INIT_WORK(&dwc->remote_wakeup_work, dwc3_gadget_remote_wakeup_work);
 	dwc->ep0_trb = dma_alloc_coherent(dwc->sysdev,
 					  sizeof(*dwc->ep0_trb) * 2,

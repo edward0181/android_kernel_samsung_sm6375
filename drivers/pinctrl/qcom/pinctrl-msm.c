@@ -33,6 +33,10 @@
 #include "pinctrl-msm.h"
 #include "../pinctrl-utils.h"
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+#include <linux/sec-pinmux.h>
+#endif
+
 #define MAX_NR_GPIO 300
 #define MAX_NR_TILES 4
 #define PS_HOLD_OFFSET 0x820
@@ -80,6 +84,10 @@ struct msm_pinctrl {
 };
 
 static struct msm_pinctrl *msm_pinctrl_data;
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+static int msm_gpio_chip_base = 0;
+#endif /* CONFIG_SEC_PM */
 
 #define MSM_ACCESSOR(name) \
 static u32 msm_readl_##name(struct msm_pinctrl *pctrl, \
@@ -559,6 +567,47 @@ static void msm_gpio_set(struct gpio_chip *chip, unsigned offset, int value)
 
 	raw_spin_unlock_irqrestore(&pctrl->lock, flags);
 }
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+bool sec_gpiochip_line_is_valid(const struct gpio_chip *gpiochip,
+				unsigned int offset)
+{
+	return gpiochip_line_is_valid(gpiochip, offset);
+}
+EXPORT_SYMBOL(sec_gpiochip_line_is_valid);
+int get_msm_gpio_chip_base(void)
+{
+	return msm_gpio_chip_base;
+}
+EXPORT_SYMBOL(get_msm_gpio_chip_base);
+
+void msm_gp_get_all(struct gpio_chip *chip, u32 pin_no, struct gpiomux_setting *set)
+{
+	const struct msm_pingroup *g;
+	struct msm_pinctrl *pctrl;
+	u32 ctl_reg, io_reg;
+	int drive;
+
+	pctrl = gpiochip_get_data(chip);
+
+	g = &pctrl->soc->groups[pin_no];
+
+	ctl_reg = msm_readl_ctl(pctrl, g);
+	io_reg = msm_readl_io(pctrl, g);
+
+	set->is_out = !!(ctl_reg & BIT(g->oe_bit));
+	set->func = (ctl_reg >> g->mux_bit) & 7;
+	drive = (ctl_reg >> g->drv_bit) & 7;
+	set->drv = msm_regval_to_drive(drive);
+	set->pull = (ctl_reg >> g->pull_bit) & 3;
+
+	if (set->is_out)
+		set->val = !!(io_reg & BIT(g->out_bit));
+	else
+		set->val = !!(io_reg & BIT(g->in_bit));	
+}
+EXPORT_SYMBOL(msm_gp_get_all);
+#endif
 
 #ifdef CONFIG_DEBUG_FS
 #include <linux/seq_file.h>
@@ -1415,6 +1464,10 @@ static int msm_gpio_init(struct msm_pinctrl *pctrl)
 			return ret;
 		}
 	}
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+	msm_gpio_chip_base = chip->base;
+#endif /* CONFIG_SEC_PM */
 
 	return 0;
 }

@@ -17,6 +17,26 @@
 
 LIST_HEAD(tsens_device_list);
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+static struct delayed_work ts_print_work;
+struct tsens_device *ts_tmdev0 = NULL;
+struct tsens_device *ts_tmdev1 = NULL;
+
+/*
+	Silver: CPU.0.0, CPU.0.1, CPU.0.2, CPU.0.3, CPU.0.4, CPU.0.5, CPUSS.0, CPUSS.1
+	Gold: CPU.1.0, CPU.1.2
+*/
+static int ts_print_num0[] = {1, 2, 3, 4, 5, 6, 7, 8, 9, 11};
+
+/*
+	MAPSS.1, CWLAN, AUDIO, DDR, Q6_HVX, CAM
+	MDM_CORE.0, MDM_CORE.1, VIDEO
+*/
+static int ts_print_num1[] = {0, 1, 2, 3, 4, 5, 6, 7, 10};
+
+static int ts_print_count;
+#endif
+
 static int tsens_get_temp(void *data, int *temp)
 {
 	struct tsens_sensor *s = data;
@@ -251,6 +271,10 @@ static int tsens_tm_remove(struct platform_device *pdev)
 {
 	platform_set_drvdata(pdev, NULL);
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+	cancel_delayed_work_sync(&ts_print_work);
+#endif
+
 	return 0;
 }
 
@@ -285,6 +309,44 @@ static void tsens_therm_fwk_notify(struct work_struct *work)
 		of_thermal_handle_trip(tmdev->dev, tmdev->zeroc.tzd);
 	}
 }
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+static void __ref ts_print(struct work_struct *work)
+{
+	struct tsens_sensor ts_sensor;
+	int temp = 0;
+	size_t i;
+	int added = 0, ret = 0;
+	char buffer[500] = { 0, };
+
+	ret = snprintf(buffer + added, sizeof(buffer) - added, "tsens");
+	added += ret;
+
+	/* print tsens0 (controller 0) */
+	ts_sensor.tmdev = ts_tmdev0;
+	for (i = 0; i < (sizeof(ts_print_num0) / sizeof(int)); i++) {
+		ts_sensor = ts_tmdev0->sensor[ts_print_num0[i]];
+		tsens_get_temp(&ts_sensor, &temp);
+		ret = snprintf(buffer + added, sizeof(buffer) - added,
+				   "[%d:%d]", ts_print_num0[i], temp/100);
+		added += ret;
+	}
+
+	/* print tsens0 (controller 1) */
+	ts_sensor.tmdev = ts_tmdev1;
+	for (i = 0; i < (sizeof(ts_print_num1) / sizeof(int)); i++) {
+		ts_sensor = ts_tmdev1->sensor[ts_print_num1[i]];
+		tsens_get_temp(&ts_sensor, &temp);
+		ret = snprintf(buffer + added, sizeof(buffer) - added,
+					   "[%d:%d]", ts_print_num1[i] + 15, temp/100);
+		added += ret;
+	}
+
+	pr_info("%s\n", buffer);
+
+	schedule_delayed_work(&ts_print_work, HZ * 5);
+}
+#endif
 
 static int tsens_tm_probe(struct platform_device *pdev)
 {
@@ -366,6 +428,20 @@ static int tsens_tm_probe(struct platform_device *pdev)
 
 	list_add_tail(&tmdev->list, &tsens_device_list);
 	platform_set_drvdata(pdev, tmdev);
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+	if (!strncmp(tmdev->pdev->name, "4410000", 7)) {
+		ts_tmdev0 = tmdev;
+	} else if (!strncmp(tmdev->pdev->name, "4412000", 7)) {
+		ts_tmdev1 = tmdev;
+	}
+
+	if (ts_print_count == 0 && ts_tmdev1 != NULL) {
+		INIT_DELAYED_WORK(&ts_print_work, ts_print);
+		schedule_delayed_work(&ts_print_work, 0);
+		ts_print_count++;
+	}
+#endif
 
 	return rc;
 }

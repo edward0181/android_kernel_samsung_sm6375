@@ -1282,7 +1282,6 @@
   irq_work_queue
   iterate_dir
   iterate_fd
-  jiffies
   jiffies_to_msecs
   jiffies_to_usecs
   kasprintf

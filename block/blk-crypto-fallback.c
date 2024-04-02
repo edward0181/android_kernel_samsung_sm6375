@@ -16,6 +16,7 @@
 #include <linux/keyslot-manager.h>
 #include <linux/mempool.h>
 #include <linux/module.h>
+#include <linux/preempt.h>
 #include <linux/random.h>
 
 #include "blk-crypto-internal.h"
@@ -466,13 +467,16 @@ out_no_keyslot:
 bool blk_crypto_queue_decrypt_bio(struct bio *bio)
 {
 	struct blk_crypto_decrypt_work *decrypt_work;
+	gfp_t kmalloc_flag = GFP_ATOMIC;
 
 	/* If there was an IO error, don't queue for decrypt. */
 	if (bio->bi_status)
 		goto out;
 
+	if(!in_interrupt() && !in_atomic())
+		kmalloc_flag = GFP_KERNEL;
 	decrypt_work = kmem_cache_zalloc(blk_crypto_decrypt_work_cache,
-					 GFP_ATOMIC);
+					 kmalloc_flag);
 	if (!decrypt_work) {
 		bio->bi_status = BLK_STS_RESOURCE;
 		goto out;

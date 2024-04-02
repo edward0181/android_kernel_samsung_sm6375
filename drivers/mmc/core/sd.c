@@ -17,6 +17,7 @@
 #include <linux/mmc/card.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
+#include <linux/mmc/slot-gpio.h>
 
 #include "core.h"
 #include "card.h"
@@ -1304,6 +1305,17 @@ static int mmc_sd_suspend(struct mmc_host *host)
 static int _mmc_sd_resume(struct mmc_host *host)
 {
 	int err = 0;
+#if IS_ENABLED(CONFIG_SEC_STORAGE_MMC)
+	int present = 0;
+	unsigned long flags;
+
+	spin_lock_irqsave(&host->lock, flags);
+	if (host->ops->get_cd) {
+		present = host->ops->get_cd(host);
+		mmc_gpiod_update_status(host, present);
+	}
+	spin_unlock_irqrestore(&host->lock, flags);
+#endif
 
 	mmc_claim_host(host);
 	mmc_log_string(host, "Enter\n");
@@ -1468,6 +1480,8 @@ err:
 	mmc_detach_bus(host);
 
 	pr_err("%s: error %d whilst initialising SD card\n",
+		mmc_hostname(host), err);
+	ST_LOG("%s: error %d whilst initialising SD card\n",
 		mmc_hostname(host), err);
 
 	return err;

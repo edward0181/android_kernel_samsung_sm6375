@@ -38,6 +38,8 @@
 
 #include "peripheral-loader.h"
 
+#include <linux/reboot.h>
+
 #define pil_err(desc, fmt, ...)						\
 	dev_err(desc->dev, "%s: " fmt, desc->name, ##__VA_ARGS__)
 #define pil_info(desc, fmt, ...)					\
@@ -1187,6 +1189,7 @@ int pil_boot(struct pil_desc *desc)
 	struct pil_priv *priv = desc->priv;
 	bool mem_protect = false;
 	bool hyp_assign = false;
+	bool secure_check_fail = false;
 
 	ret = pil_notify_aop(desc, "on");
 	if (ret < 0) {
@@ -1254,6 +1257,7 @@ int pil_boot(struct pil_desc *desc)
 		/* S2 mapping not yet done */
 		desc->clear_fw_region = false;
 		pil_err(desc, "Initializing image failed(rc:%d)\n", ret);
+		secure_check_fail = true;
 		goto err_boot;
 	}
 
@@ -1330,6 +1334,7 @@ int pil_boot(struct pil_desc *desc)
 	ret = desc->ops->auth_and_reset(desc);
 	if (ret) {
 		pil_err(desc, "Failed to bring out of reset(rc:%d)\n", ret);
+		secure_check_fail = true;
 		goto err_auth_and_reset;
 	}
 	trace_pil_event("reset_done", desc);
@@ -1342,6 +1347,11 @@ int pil_boot(struct pil_desc *desc)
 	pil_info(desc, "Brought out of reset\n");
 	desc->modem_ssr = false;
 err_auth_and_reset:
+	if (secure_check_fail && (ret == -EINVAL) && (!strcmp(desc->name, "mba") || !strcmp(desc->name, "modem"))) {
+#if IS_BUILTIN(CONFIG_MSM_PIL)
+		machine_restart("peripheral_hw_reset");
+#endif
+	}
 	if (ret && desc->subsys_vmid > 0) {
 		pil_assign_mem_to_linux(desc, priv->region_start,
 				(priv->region_end - priv->region_start));
@@ -1373,6 +1383,12 @@ out:
 		}
 		pil_release_mmap(desc);
 		pil_notify_aop(desc, "off");
+		if (secure_check_fail && (ret == -EINVAL) &&
+				(!strcmp(desc->name, "mba") || !strcmp(desc->name, "modem"))) {
+#if IS_BUILTIN(CONFIG_MSM_PIL)
+			machine_restart("peripheral_hw_reset");
+#endif
+		}
 	}
 	return ret;
 }

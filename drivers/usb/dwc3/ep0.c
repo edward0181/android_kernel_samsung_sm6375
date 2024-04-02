@@ -27,6 +27,18 @@
 #include "gadget.h"
 #include "io.h"
 
+#if IS_MODULE(CONFIG_BATTERY_SAMSUNG)
+#include <linux/battery/sec_battery_common.h>
+#elif defined(CONFIG_BATTERY_SAMSUNG)
+#include "../../battery/common/sec_charging_common.h"
+#endif
+#ifdef CONFIG_USB_NOTIFY_PROC_LOG
+#include <linux/usb_notify.h>
+#endif
+#if IS_ENABLED(CONFIG_USB_TYPEC_MANAGER_NOTIFIER)
+#include <linux/usb/typec/manager/usb_typec_manager_notifier.h>
+#endif
+
 static void __dwc3_ep0_do_control_status(struct dwc3 *dwc, struct dwc3_ep *dep);
 static void __dwc3_ep0_do_control_data(struct dwc3 *dwc,
 		struct dwc3_ep *dep, struct dwc3_request *req);
@@ -841,6 +853,15 @@ static int dwc3_ep0_std_request(struct dwc3 *dwc, struct usb_ctrlrequest *ctrl)
 		break;
 	case USB_REQ_SET_CONFIGURATION:
 		ret = dwc3_ep0_set_config(dwc, ctrl);
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
+		if (ret < 0)
+			break;
+		if (dwc->gadget.speed == USB_SPEED_SUPER)
+			dwc->vbus_current = USB_CURRENT_SUPER_SPEED;
+		else
+			dwc->vbus_current = USB_CURRENT_HIGH_SPEED;
+		schedule_work(&dwc->set_vbus_current_work);
+#endif
 		break;
 	case USB_REQ_SET_SEL:
 		ret = dwc3_ep0_set_sel(dwc, ctrl);

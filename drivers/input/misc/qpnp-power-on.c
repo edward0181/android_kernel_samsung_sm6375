@@ -253,6 +253,12 @@ static struct qpnp_pon *modem_reset_dev;
 static DEFINE_SPINLOCK(spon_list_slock);
 static LIST_HEAD(spon_dev_list);
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+static struct qpnp_pon *pon_hlos_dev;
+static int wake_enabled;
+static int reset_enabled;
+#endif
+
 static u32 s1_delay[PON_S1_COUNT_MAX + 1] = {
 	0, 32, 56, 80, 138, 184, 272, 408, 608, 904, 1352, 2048, 3072, 4480,
 	6720, 10256
@@ -1408,11 +1414,24 @@ qpnp_pon_request_irqs(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 	/* Mark the interrupts wakeable if they support linux-key */
 	if (cfg->key_code) {
 		enable_irq_wake(cfg->state_irq);
+#if IS_ENABLED(CONFIG_SEC_PM)
+		if (cfg->pon_type == PON_KPDPWR)
+			wake_enabled = true;
+
+		if (cfg->pon_type == PON_RESIN)
+			sec_set_resin_wk_int(false);
+#endif
 
 		/* Special handling for RESIN due to a hardware bug */
 		if (cfg->pon_type == PON_RESIN && cfg->support_reset)
 			enable_irq_wake(cfg->bark_irq);
 	}
+#if IS_ENABLED(CONFIG_SEC_PM)
+	else {
+		if (cfg->pon_type == PON_KPDPWR)
+			wake_enabled = false;
+	}
+#endif
 
 	return 0;
 }
@@ -1712,6 +1731,9 @@ static int qpnp_pon_config_init(struct qpnp_pon *pon,
 							 cfg_node);
 			if (rc)
 				return rc;
+#if IS_ENABLED(CONFIG_SEC_PM)
+			pon_hlos_dev = pon;
+#endif
 			break;
 		case PON_RESIN:
 			rc = qpnp_pon_config_resin_init(pon, pdev, cfg,
@@ -2073,6 +2095,102 @@ static void qpnp_pon_debugfs_init(struct qpnp_pon *pon)
 
 static void qpnp_pon_debugfs_remove(struct qpnp_pon *pon)
 {}
+#endif
+
+#if IS_ENABLED(CONFIG_SEC_PM)
+static int qpnp_wake_enabled(const char *val, const struct kernel_param *kp)
+{
+	struct qpnp_pon *pon = pon_hlos_dev;
+	int ret = 0;
+	int old_val = wake_enabled;
+	
+	struct qpnp_pon_config *cfg;
+
+	ret = param_set_bool(val, kp);
+	if (ret) {
+		pr_err("Unable to set %s: %d\n", __func__, ret);
+		return ret;
+	}
+
+	if (old_val == wake_enabled)
+		return ret;
+
+	cfg = qpnp_get_cfg(pon, PON_KPDPWR);
+	if (!cfg) {
+		pr_err("%s: Invalid config pointer\n", __func__);
+		return -EFAULT;
+	}
+
+	if (!wake_enabled)
+		disable_irq_wake(cfg->state_irq);
+	else
+		enable_irq_wake(cfg->state_irq);
+
+	pr_info("%s: wake_enabled changed [%d -> %d]\n",
+			__func__, old_val, wake_enabled);
+
+	return ret;
+}
+
+static struct kernel_param_ops module_ops = {
+	.set = qpnp_wake_enabled,
+	.get = param_get_bool,
+};
+
+module_param_cb(wake_enabled, &module_ops, &wake_enabled, 0644);
+
+static int qpnp_reset_enabled(const char *val, const struct kernel_param *kp)
+{
+	struct qpnp_pon *pon = sys_reset_dev;
+	int ret = 0;
+
+	ret = param_set_bool(val, kp);
+	if (ret) {
+		pr_err("Unable to set %s: %d\n", __func__, ret);
+		return ret;
+	}
+
+	ret = qpnp_pon_masked_write(pon, QPNP_PON_KPDPWR_S2_CNTL2(pon),
+							   QPNP_PON_S2_CNTL_EN, val? QPNP_PON_S2_CNTL_EN : 0);
+
+	if (ret) {
+		pr_err("%s: Unable to set S2 reset for KPDPWR\n", __func__);
+		return ret;
+	}
+
+	pr_info("%s: reset_enabled = %d\n", __func__, reset_enabled);
+
+	return ret;
+}
+
+static struct kernel_param_ops reset_module_ops = {
+	.set = qpnp_reset_enabled,
+	.get = param_get_bool,
+};
+
+module_param_cb(reset_enabled, &reset_module_ops, &reset_enabled, 0644);
+
+int sec_set_resin_wk_int(int en)
+{
+	struct qpnp_pon *pon = pon_hlos_dev;
+	struct qpnp_pon_config *cfg;
+
+	cfg = qpnp_get_cfg(pon, PON_RESIN);
+	if (!cfg) {
+		pr_err("%s: Invalid config pointer\n", __func__);
+		return -EFAULT;
+	}
+
+	if (!en)
+		disable_irq_wake(cfg->state_irq);
+	else
+		enable_irq_wake(cfg->state_irq);
+
+	pr_info("%s: volkey_wakeup = %d\n", __func__, en);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(sec_set_resin_wk_int);
 #endif
 
 static int qpnp_pon_read_gen2_pon_off_reason(struct qpnp_pon *pon, u16 *reason,

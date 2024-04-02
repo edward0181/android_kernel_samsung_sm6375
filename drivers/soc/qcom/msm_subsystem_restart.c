@@ -29,8 +29,13 @@
 #include <soc/qcom/sysmon.h>
 #include <linux/of_irq.h>
 #include <linux/of.h>
+#include <linux/of_gpio.h>
 #include <asm/current.h>
 #include <linux/timer.h>
+
+#if IS_ENABLED(CONFIG_SEC_DEBUG)
+#include <linux/sec_debug.h>
+#endif
 
 #define CREATE_TRACE_POINTS
 #include <trace/events/trace_msm_ssr_event.h>
@@ -41,6 +46,13 @@
 /* If set to 0x9889deed, call to subsystem_restart_dev() returns immediately */
 static uint disable_restart_work;
 module_param(disable_restart_work, uint, 0644);
+
+static bool silent_ssr;
+static bool adsp_silent_ssr;
+static char ril_fcr[16];
+#define STOP_REASON_0_BIT 0x10
+#define STOP_REASON_1_BIT 0x20
+#define STOP_REASON_BIT	(STOP_REASON_0_BIT | STOP_REASON_1_BIT)
 
 /* The maximum shutdown timeout is the product of MAX_LOOPS and DELAY_MS. */
 #define SHUTDOWN_ACK_MAX_LOOPS	100
@@ -1060,6 +1072,11 @@ static void device_restart_work_hdlr(struct work_struct *work)
 	 * sync() and fclose() on attempting the dump.
 	 */
 	msleep(100);
+
+	if (!strncmp(dev->desc->name, "modem", 5) && strlen(ril_fcr))
+		panic("RIL triggered %s crash %s",
+			dev->desc->name, ril_fcr);
+
 	panic("subsys-restart: Resetting the SoC - %s crashed.",
 							dev->desc->name);
 }
@@ -1079,6 +1096,29 @@ int subsystem_restart_dev(struct subsys_device *dev)
 	name = dev->desc->name;
 
 	subsys_send_early_notifications(dev->early_notify);
+
+#if IS_ENABLED(CONFIG_SEC_DEBUG)
+	if (!sec_debug_is_enabled())
+		dev->restart_level = RESET_SUBSYS_COUPLED;
+	else
+		dev->restart_level = RESET_SOC;
+#endif
+
+	/* force modem silent ssr */
+	if (!strncmp(name, "modem", 5)) {
+		if (silent_ssr) {
+			dev->restart_level = RESET_SUBSYS_COUPLED;
+			silent_ssr = false;
+		}
+		qcom_smem_state_update_bits(dev->desc->state, 
+			STOP_REASON_BIT | BIT(dev->desc->force_stop_bit), 0x0);
+	}
+
+	/* force adsp silent ssr */
+	if (!strncmp(name, "adsp", 4) && adsp_silent_ssr) {
+		dev->restart_level = RESET_SUBSYS_COUPLED;
+		adsp_silent_ssr = false;
+	}
 
 	/*
 	 * If a system reboot/shutdown is underway, ignore subsystem errors.
@@ -1119,6 +1159,32 @@ int subsystem_restart_dev(struct subsys_device *dev)
 	return 0;
 }
 EXPORT_SYMBOL(subsystem_restart_dev);
+
+int subsys_force_stop(struct msm_ipc_subsys_request *req)
+{
+	struct subsys_device *subsys = find_subsys_device(req->name);
+
+	/* NOTE: it supports only "modem" */
+	if (strncmp(req->name, "modem", 5) || !subsys) {
+		pr_err("unsupported subsys: %s\n", req->name);
+		return -ENODEV;
+	}
+
+	silent_ssr = req->request_id;
+	pr_err("silent_ssr %d: %s\n", silent_ssr, req->name);
+
+	/* set reset reason gpio for modem */
+	qcom_smem_state_update_bits(subsys->desc->state, STOP_REASON_BIT,
+						silent_ssr ? STOP_REASON_1_BIT : STOP_REASON_0_BIT);
+
+	/* set RIL force crash reason if needed */
+	if (!silent_ssr)
+		strncpy(ril_fcr, req->reason, sizeof(ril_fcr));
+
+	subsys->desc->crash_shutdown(subsys->desc);
+	return 0;
+}
+EXPORT_SYMBOL(subsys_force_stop);
 
 int subsystem_restart(const char *name)
 {
@@ -1167,6 +1233,12 @@ void subsys_set_crash_status(struct subsys_device *dev,
 	dev->crashed = crashed;
 }
 EXPORT_SYMBOL(subsys_set_crash_status);
+
+void subsys_set_adsp_silent_ssr(bool value)
+{
+	adsp_silent_ssr = value;
+}
+EXPORT_SYMBOL(subsys_set_adsp_silent_ssr);
 
 enum crash_status subsys_get_crash_status(struct subsys_device *dev)
 {
@@ -1417,8 +1489,25 @@ err:
 static int subsys_parse_devicetree(struct subsys_desc *desc)
 {
 	struct subsys_soc_restart_order *order;
+	int ret;
 	struct platform_device *pdev = container_of(desc->dev,
 					struct platform_device, dev);
+
+	if (!strncmp(desc->name, "adsp", 4)) {
+		desc->sensor_1p8_en = of_get_named_gpio(pdev->dev.of_node,
+						"qcom,sensor-1p8-en", 0);
+		if (gpio_is_valid(desc->sensor_1p8_en)) {
+			ret = gpio_request(desc->sensor_1p8_en,
+				"sensor-1p8-en");
+
+			if (ret < 0)
+				pr_err("%s, %s gpio_request failed\n",
+					__func__, desc->name);
+		} else {
+			pr_err("%s, %s get sensor_1p8_en failed (%d)\n",
+			__func__, desc->name, desc->sensor_1p8_en);
+		}
+	}
 
 	desc->ignore_ssr_failure = of_property_read_bool(pdev->dev.of_node,
 						"qcom,ignore-ssr-failure");

@@ -37,6 +37,10 @@
 
 #include "irq-gic-common.h"
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+#include <linux/wakeup_reason.h>
+#endif
+
 #define GICD_INT_NMI_PRI	(GICD_INT_DEF_PRI & ~0x80)
 
 #define FLAGS_WORKAROUND_GICR_WAKER_MSM8996	(1ULL << 0)
@@ -602,6 +606,7 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 	     i < GIC_LINE_NR;
 	     i = find_next_bit((unsigned long *)pending, GIC_LINE_NR, i + 1)) {
 		unsigned int irq = irq_find_mapping(gic->domain, i);
+#if !IS_ENABLED(CONFIG_SEC_PM)
 		struct irq_desc *desc = irq_to_desc(irq);
 		const char *name = "null";
 
@@ -617,6 +622,9 @@ static void gic_show_resume_irq(struct gic_chip_data *gic)
 
 		pr_warn("%s: irq:%d hwirq:%u triggered %s\n",
 			 __func__, irq, i, name);
+#else
+		log_irq_wakeup_reason(irq);
+#endif
 	}
 }
 

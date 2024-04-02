@@ -106,4 +106,7 @@ static inline int qpnp_pon_modem_pwr_off(enum pon_power_off_type type)
 
 #endif
 
+#if IS_ENABLED(CONFIG_SEC_PM)
+int sec_set_resin_wk_int(int en);
+#endif
 #endif

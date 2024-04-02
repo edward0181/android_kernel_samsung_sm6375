@@ -54,8 +54,12 @@ static LIST_HEAD(regulator_ena_gpio_list);
 static LIST_HEAD(regulator_supply_alias_list);
 static LIST_HEAD(regulator_coupler_list);
 static bool has_full_constraints;
-#ifdef CONFIG_DEBUG_FS
+#if IS_ENABLED(CONFIG_DEBUG_FS)
+#if IS_ENABLED(CONFIG_SEC_PM)
+static bool debug_suspend = true;
+#else
 static bool debug_suspend;
+#endif
 #endif
 
 static struct dentry *debugfs_root;
@@ -6129,7 +6133,7 @@ static int regulator_summary_show(struct seq_file *s, void *data)
 DEFINE_SHOW_ATTRIBUTE(regulator_summary);
 #endif /* CONFIG_DEBUG_FS */
 
-#ifdef CONFIG_REGULATOR_QTI_DEBUG
+#if IS_ENABLED(CONFIG_SEC_PM)
 static int _regulator_debug_print_enabled(struct device *dev, void *data)
 {
 	struct regulator_dev *rdev = dev_to_rdev(dev);
@@ -6187,15 +6191,17 @@ static int _regulator_debug_print_enabled(struct device *dev, void *data)
  */
 void regulator_debug_print_enabled(void)
 {
+#if IS_ENABLED(CONFIG_REGULATOR_QTI_DEBUG)
 	if (likely(!debug_suspend))
 		return;
+#endif /* CONFIG_REGULATOR_QTI_DEBUG */
 
 	pr_info("Enabled regulators:\n");
 	class_for_each_device(&regulator_class, NULL, NULL,
 			     _regulator_debug_print_enabled);
 }
 EXPORT_SYMBOL(regulator_debug_print_enabled);
-#endif /* CONFIG_REGULATOR_QTI_DEBUG */
+#endif /* CONFIG_SEC_PM */
 
 static int __init regulator_init(void)
 {

@@ -1461,6 +1461,11 @@ struct task_struct {
 	unsigned long			prev_lowest_stack;
 #endif
 
+	/*
+	 * [0] : sec_debug_wait.type
+	 * [1] : sec_debug_wait.data
+	 * [2] : Used by FIVE project
+	 */
 	ANDROID_VENDOR_DATA_ARRAY(1, 3);
 
 	ANDROID_KABI_RESERVE(1);

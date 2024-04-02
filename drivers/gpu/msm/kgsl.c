@@ -2038,6 +2038,10 @@ long kgsl_ioctl_gpu_aux_command(struct kgsl_device_private *dev_priv,
 		(KGSL_GPU_AUX_COMMAND_TIMELINE)))
 		return -EINVAL;
 
+	if ((param->flags & KGSL_GPU_AUX_COMMAND_SYNC) &&
+		(param->numsyncs > KGSL_MAX_SYNCPOINTS))
+		return -EINVAL;
+
 	context = kgsl_context_get_owner(dev_priv, param->context_id);
 	if (!context)
 		return -EINVAL;
@@ -4587,6 +4591,27 @@ void kgsl_device_platform_remove(struct kgsl_device *device)
 	_unregister_device(device);
 }
 
+#ifdef CONFIG_QCOM_KGSL
+static int kgsl_sharedmem_size_notifier(struct notifier_block *nb,
+					unsigned long action, void *data)
+{
+	struct seq_file *s;
+
+	s = (struct seq_file *)data;
+	if (s != NULL)
+		seq_printf(s, "KgslSharedmem:  %8lu kB\n",
+			atomic_long_read(&kgsl_driver.stats.page_alloc) >> 10);
+	else
+		pr_cont("KgslSharedmem:%lukB ",
+			atomic_long_read(&kgsl_driver.stats.page_alloc) >> 10);
+	return 0;
+}
+
+static struct notifier_block kgsl_sharedmem_size_nb = {
+	.notifier_call = kgsl_sharedmem_size_notifier,
+};
+#endif
+
 void kgsl_core_exit(void)
 {
 	kgsl_exit_page_pools();
@@ -4624,6 +4649,9 @@ void kgsl_core_exit(void)
 
 	kfree(memfree.list);
 	memset(&memfree, 0, sizeof(memfree));
+#ifdef CONFIG_QCOM_KGSL
+	show_mem_extra_notifier_unregister(&kgsl_sharedmem_size_nb);
+#endif
 
 	unregister_chrdev_region(kgsl_driver.major,
 		ARRAY_SIZE(kgsl_driver.devp));
@@ -4738,6 +4766,9 @@ int __init kgsl_core_init(void)
 	memfree.list = kcalloc(MEMFREE_ENTRIES, sizeof(struct memfree_entry),
 		GFP_KERNEL);
 
+#ifdef CONFIG_QCOM_KGSL
+	show_mem_extra_notifier_register(&kgsl_sharedmem_size_nb);
+#endif
 	place_marker("M - DRIVER KGSL Ready");
 
 	return 0;

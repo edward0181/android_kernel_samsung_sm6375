@@ -26,6 +26,7 @@
 #include <linux/acpi.h>
 #include <linux/pinctrl/consumer.h>
 #include <linux/reset.h>
+#include <linux/usb_notify.h>
 
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
@@ -39,12 +40,64 @@
 
 #include "debug.h"
 
+#if IS_MODULE(CONFIG_BATTERY_SAMSUNG)
+#include <linux/battery/sec_battery_common.h>
+#elif defined(CONFIG_BATTERY_SAMSUNG)
+#include "../../battery/common/sec_charging_common.h"
+#endif
+
 #define DWC3_DEFAULT_AUTOSUSPEND_DELAY	500 /* ms */
 
 static int count;
 static struct dwc3 *dwc3_instance[DWC_CTRL_COUNT];
 
 static void dwc3_check_params(struct dwc3 *dwc);
+
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
+int dwc3_set_vbus_current(int state)
+{
+	struct power_supply *psy;
+	union power_supply_propval pval = {0};
+
+	pr_info("usb: %s : %dmA\n", __func__, state);
+	psy = power_supply_get_by_name("battery");
+	if (!psy) {
+		pr_err("%s: fail to get battery power_supply\n", __func__);
+		return -1;
+	}
+
+	pval.intval = state;
+	psy_do_property("battery", set, POWER_SUPPLY_EXT_PROP_USB_CONFIGURE, pval);
+	power_supply_put(psy);
+	return 0;
+}
+
+static void dwc3_msm_set_vbus_current_work(struct work_struct *w)
+{
+	struct dwc3 *dwc = container_of(w, struct dwc3, set_vbus_current_work);
+	struct otg_notify *o_notify = get_otg_notify();
+
+	switch (dwc->vbus_current) {
+	case USB_CURRENT_SUSPENDED:
+	/* set vbus current for suspend state is called in usb_notify. */
+		send_otg_notify(o_notify, NOTIFY_EVENT_USBD_SUSPENDED, 1);
+		goto skip;
+	case USB_CURRENT_UNCONFIGURED:
+		send_otg_notify(o_notify, NOTIFY_EVENT_USBD_UNCONFIGURED, 1);
+		break;
+	case USB_CURRENT_HIGH_SPEED:
+	case USB_CURRENT_SUPER_SPEED:
+		send_otg_notify(o_notify, NOTIFY_EVENT_USBD_CONFIGURED, 1);
+		break;
+	default:
+		break;
+	}
+	dwc3_set_vbus_current(dwc->vbus_current);
+skip:
+	return;
+}
+#endif
+
 
 /**
  * dwc3_get_dr_mode - Validates and sets dr_mode
@@ -1778,7 +1831,7 @@ static int dwc3_probe(struct platform_device *pdev)
 		}
 	}
 
-	dwc->dwc_ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES,
+	dwc->dwc_ipc_log_ctxt = ipc_log_context_create(NUM_LOG_PAGES*4,
 					dev_name(dwc->dev), 0);
 	if (!dwc->dwc_ipc_log_ctxt)
 		dev_err(dwc->dev, "Error getting ipc_log_ctxt\n");
@@ -1796,6 +1849,10 @@ static int dwc3_probe(struct platform_device *pdev)
 
 	pm_runtime_allow(dev);
 	dwc3_debugfs_init(dwc);
+#if IS_ENABLED(CONFIG_USB_CHARGING_EVENT)
+	INIT_WORK(&dwc->set_vbus_current_work, dwc3_msm_set_vbus_current_work);
+#endif
+
 	return 0;
 
 err3:

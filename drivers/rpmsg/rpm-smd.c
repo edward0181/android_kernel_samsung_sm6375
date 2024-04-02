@@ -1380,7 +1380,11 @@ int msm_rpm_wait_for_ack(uint32_t msg_id)
 	if (!elem)
 		return rc;
 
-	wait_for_completion(&elem->ack);
+	rc = wait_for_completion_timeout(&elem->ack, msecs_to_jiffies(1000));
+	if (rc == 0) {
+		pr_err("[%s] didn't get the ack from RPM within 1 sec\n", __func__);
+		BUG();
+	}
 	trace_rpm_smd_ack_recvd(0, msg_id, 0xDEADFEED);
 
 	rc = elem->errno;
