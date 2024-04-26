@@ -412,17 +412,17 @@ else
 HOSTCC	= gcc
 HOSTCXX	= g++
 endif
-KBUILD_HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O2 \
+KBUILD_HOSTCFLAGS   := -Wall -Wmissing-prototypes -Wstrict-prototypes -O3 \
 		-fomit-frame-pointer -std=gnu89 $(HOST_LFS_CFLAGS) \
 		$(HOSTCFLAGS)
-KBUILD_HOSTCXXFLAGS := -O2 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
+KBUILD_HOSTCXXFLAGS := -O3 $(HOST_LFS_CFLAGS) $(HOSTCXXFLAGS)
 KBUILD_HOSTLDFLAGS  := $(HOST_LFS_LDFLAGS) $(HOSTLDFLAGS)
 KBUILD_HOSTLDLIBS   := $(HOST_LFS_LIBS) $(HOSTLDLIBS)
 
 # Make variables (CC, etc...)
 CPP		= $(CC) -E
 ifneq ($(LLVM),)
-REAL_CC	= clang
+CC	= clang
 LD		= ld.lld
 AR		= llvm-ar
 NM		= llvm-nm
@@ -432,7 +432,7 @@ READELF		= llvm-readelf
 OBJSIZE		= llvm-size
 STRIP		= llvm-strip
 else
-REAL_CC		= $(CROSS_COMPILE)gcc
+CC		= clang
 LD		= $(CROSS_COMPILE)ld
 AR		= $(CROSS_COMPILE)ar
 NM		= $(CROSS_COMPILE)nm
@@ -460,13 +460,13 @@ LZMA		= lzma
 LZ4		= lz4c
 XZ		= xz
 
-ifndef DISABLE_WRAPPER
+# ifndef DISABLE_WRAPPER
 # Use the wrapper for the compiler.  This wrapper scans for new
 # warnings and causes the build to stop upon encountering them
-CC		= $(srctree)/scripts/gcc-wrapper.py $(REAL_CC)
-else
-CC		= $(REAL_CC)
-endif
+# CC		= $(srctree)/scripts/gcc-wrapper.py $(REAL_CC)
+# else
+# CC		= $(REAL_CC)
+# endif
 
 CHECKFLAGS     := -D__linux__ -Dlinux -D__STDC__ -Dunix -D__unix__ \
 		  -Wbitwise -Wno-return-void -Wno-unknown-attribute $(CF)
