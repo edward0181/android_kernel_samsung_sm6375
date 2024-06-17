@@ -3,6 +3,7 @@
  * drivers/mmc/host/sdhci-msm.c - Qualcomm SDHCI Platform driver
  *
  * Copyright (c) 2013-2014,2020. The Linux Foundation. All rights reserved.
+ * Copyright (c) 2022-2024 Qualcomm Innovation Center, Inc. All rights reserved.
  */
 
 #include <linux/module.h>
@@ -142,7 +143,7 @@
 
 #define INVALID_TUNING_PHASE	-1
 #define sdhci_is_valid_gpio_wakeup_int(_h) ((_h)->sdiowakeup_irq >= 0)
-#define SDHCI_MSM_MIN_CLOCK	300000
+#define SDHCI_MSM_MIN_CLOCK	400000
 #define CORE_FREQ_100MHZ	(100 * 1000 * 1000)
 #define TCXO_FREQ		19200000
 
