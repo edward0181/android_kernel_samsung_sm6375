@@ -1,19 +1,70 @@
+#!/bin/bash
+
+# Download Prebuilt Clang (AOSP)
+if [ ! -d $(pwd)/toolchain/clang/host/linux-x86/clang-r416183b ]; then
+    echo "Downloading Prebuilt Clang from AOSP..."
+    mkdir -p $(pwd)/toolchain/clang/host/linux-x86/clang-r416183b
+    curl -Lsq https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master-kernel-build-2021/clang-r416183b.tar.gz -o clang.tgz
+    tar -xzf clang.tgz -C $(pwd)/toolchain/clang/host/linux-x86/clang-r416183b
+else
+    echo "This $(pwd)/toolchain/clang/host/linux-x86/clang-r416183b already exists."
+fi
+
+# Download Prebuilt GCC (AOSP)
+if [ ! -d $(pwd)/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 ]; then
+    echo "Downloading Prebuilt Clang from AOSP..."
+    git clone --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 -b master-kernel-build-2021 $(pwd)/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9
+else
+    echo "This $(pwd)/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9 already exists."
+fi
+
+if [ ! -d $(pwd)/toolchain/gcc/linux-x86/arm/arm-linux-androideabi-4.9 ]; then
+    echo "Downloading Prebuilt Clang from AOSP..."
+    git clone --depth=1 --single-branch https://android.googlesource.com/platform/prebuilts/gcc/linux-x86/arm/arm-linux-androideabi-4.9 -b master-kernel-build-2021 $(pwd)/toolchain/gcc/linux-x86/arm/arm-linux-androideabi-4.9
+else
+    echo "This $(pwd)/toolchain/gcc/linux-x86/arm/arm-linux-androideabi-4.9 already exists."
+fi
+
+# Install Packages (In case your server don't have this pre-installed)
+# Run `sudo apt-get update -y` as well.
+echo "Updating build environment..."
+sudo apt-get update -y
+echo "Update done."
+
+echo "Installing necessary packages..."
+sudo apt-get install bison flex rsync bison device-tree-compiler bc cpio -y
+echo "Package installation done."
+
+# Exports
 export ARCH=arm64
-#export LLVM=1
-export CLANG_PREBUILT_BIN=$(pwd)/toolchain/clang-proton/bin
-export PATH=$PATH:$CLANG_PREBUILT_BIN
-BUILD_CROSS_COMPILE=$(pwd)/toolchain/clang-proton/bin/aarch64-linux-gnu-
-KERNEL_LLVM_BIN=$(pwd)/toolchain/clang-proton/bin/clang
-CLANG_TRIPLE=aarch64-linux-gnu-
-KERNEL_MAKE_ENV="CONFIG_BUILD_ARM64_DT_OVERLAY=y"
+export CROSS_COMPILE=$(pwd)/toolchain/gcc/linux-x86/aarch64/aarch64-linux-android-4.9/bin/aarch64-linux-androidkernel-
+export CROSS_COMPILE_COMPAT=$(pwd)/toolchain/gcc/linux-x86/arm/arm-linux-androideabi-4.9/bin/arm-linux-androideabi-
+export CLANG_TOOL_PATH=$(pwd)/toolchain/clang/host/linux-x86/clang-r416183b/bin
+export PATH=${CLANG_TOOL_PATH}:${PATH//"${CLANG_TOOL_PATH}:"}
+export LD_LIBRARY_PATH=$(pwd)/toolchain/clang/host/linux-x86/clang-r416183b/lib64
 
-mkdir out
-make -j7 -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE LTO=thin CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y vendor/a23xq_KSU_defconfig
-#make -j7 -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y menuconfig
-make -j7 -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE TLO=thin CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y
-make -j7 -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE LTO=thin CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y modules_install INSTALL_MOD_STRIP=1 INSTALL_MOD_PATH=kernel_modules
-make -j7 -C $(pwd) O=$(pwd)/out $KERNEL_MAKE_ENV ARCH=arm64 CROSS_COMPILE=$BUILD_CROSS_COMPILE LTO=thin CC=$KERNEL_LLVM_BIN CLANG_TRIPLE=$CLANG_TRIPLE CONFIG_SECTION_MISMATCH_WARN_ONLY=y modules_prepare
+make -C $(pwd) O=$(pwd)/out CC=clang LLVM=1 ARCH=arm64 DTC_EXT=$(pwd)/tools/dtc CLANG_TRIPLE=aarch64-linux-gnu- vendor/a23xq_KSU_defconfig
+make -C $(pwd) O=$(pwd)/out CC=clang LLVM=1 ARCH=arm64 DTC_EXT=$(pwd)/tools/dtc CLANG_TRIPLE=aarch64-linux-gnu- -j$(nproc --all)
 
-#make -j7 -C $(pwd) O=$(pwd)/out CONFIG_BUILD_ARM64_DT_OVERLAY=y ARCH=arm64 CROSS_COMPILE=/workspaces/aarch64-linux-android-4.9/bin/aarch64-linux-android- REAL_CC=/workspaces/clang/bin/clang CLANG_TRIPLE=aarch64-linux-gnu- CONFIG_SECTION_MISMATCH_WARN_ONLY=y modules_prepare
+# Final Build
+mkdir -p kernelbuild
+echo "Copying Image into kernelbuild..."
+cp -nf $(pwd)/out/arch/arm64/boot/Image $(pwd)/kernelbuild
+echo "Done copying Image/.gz into kernelbuild."
 
-cp out/arch/arm64/boot/Image $(pwd)/arch/arm64/boot/Image
+mkdir -p modulebuild
+echo "Copying modules into modulebuild..."
+cp -nr $(find out -name '*.ko') $(pwd)/modulebuild
+echo "Stripping debug symbols from modules..."
+$(pwd)/toolchain/clang/host/linux-x86/clang-r416183b/bin/llvm-strip --strip-debug $(pwd)/modulebuild/*.ko
+echo "Done copying modules into modulebuild."
+
+# AnyKernel3 Support
+cp -nf $(pwd)/kernelbuild/Image $(pwd)/AnyKernel3
+cp -nr $(pwd)/modulebuild/*.ko $(pwd)/AnyKernel3/modules/vendor/lib/modules
+cd AnyKernel3 && zip -r9 UPDATE-AnyKernel3-a23xq.zip * -x .git README.md *placeholder
+
+# Cleanups
+echo "Cleaning out/ directory..."
+rm -rf out/
+echo "Done."
