@@ -981,6 +981,7 @@ static int enqueue_hrtimer(struct hrtimer *timer,
 			   enum hrtimer_mode mode)
 {
 	debug_activate(timer, mode);
+	WARN_ON_ONCE(!base->cpu_base->online);
 
 	base->cpu_base->active_bases |= 1 << base->index;
 
@@ -1005,6 +1006,7 @@ static void __remove_hrtimer(struct hrtimer *timer,
 			     u8 newstate, int reprogram)
 {
 	struct hrtimer_cpu_base *cpu_base = base->cpu_base;
+	u8 state = timer->state;
 
 	if (!(timer->state & HRTIMER_STATE_ENQUEUED))
 		goto out;
@@ -2083,17 +2085,13 @@ int hrtimers_prepare_cpu(unsigned int cpu)
 }
 
 #ifdef CONFIG_HOTPLUG_CPU
+
 static void migrate_hrtimer_list(struct hrtimer_clock_base *old_base,
 				 struct hrtimer_clock_base *new_base,
 				 bool remove_pinned)
 {
 	struct hrtimer *timer;
 	struct timerqueue_node *node;
-	struct timerqueue_head pinned;
-	int is_pinned;
-	bool is_hotplug = !cpu_online(old_base->cpu_base->cpu);
-
-	timerqueue_init_head(&pinned);
 
 	while ((node = timerqueue_getnext(&old_base->active))) {
 		timer = container_of(node, struct hrtimer, node);
@@ -2164,6 +2162,7 @@ static void __migrate_hrtimers(unsigned int scpu, bool remove_pinned)
 
 	raw_spin_unlock(&old_base->lock);
 	raw_spin_unlock(&new_base->lock);
+
 
 	/* Check, if we got expired work to do */
 	__hrtimer_peek_ahead_timers();
