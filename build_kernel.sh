@@ -27,13 +27,13 @@ fi
 
 # Install Packages (In case your server don't have this pre-installed)
 # Run `sudo apt-get update -y` as well.
-echo "Updating build environment..."
-sudo apt-get update -y
-echo "Update done."
+#echo "Updating build environment..."
+#sudo apt-get update -y
+#echo "Update done."
 
-echo "Installing necessary packages..."
-sudo apt-get install bison flex rsync bison device-tree-compiler bc cpio -y
-echo "Package installation done."
+#echo "Installing necessary packages..."
+#sudo apt-get install bison flex rsync bison device-tree-compiler bc cpio -y
+#echo "Package installation done."
 
 # Exports
 export ARCH=arm64
