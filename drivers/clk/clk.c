@@ -59,7 +59,6 @@ struct clk_core {
 	struct clk_hw		*hw;
 	struct module		*owner;
 	struct device		*dev;
-	struct hlist_node	rpm_node;
 	struct device_node	*of_node;
 	struct clk_core		*parent;
 	struct clk_parent_map	*parents;
@@ -133,89 +132,6 @@ static void clk_pm_runtime_put(struct clk_core *core)
 		return;
 
 	pm_runtime_put_sync(core->dev);
-}
-
-/**
- * clk_pm_runtime_get_all() - Runtime "get" all clk provider devices
- *
- * Call clk_pm_runtime_get() on all runtime PM enabled clks in the clk tree so
- * that disabling unused clks avoids a deadlock where a device is runtime PM
- * resuming/suspending and the runtime PM callback is trying to grab the
- * prepare_lock for something like clk_prepare_enable() while
- * clk_disable_unused_subtree() holds the prepare_lock and is trying to runtime
- * PM resume/suspend the device as well.
- *
- * Context: Acquires the 'clk_rpm_list_lock' and returns with the lock held on
- * success. Otherwise the lock is released on failure.
- *
- * Return: 0 on success, negative errno otherwise.
- */
-static int clk_pm_runtime_get_all(void)
-{
-	int ret;
-	struct clk_core *core, *failed;
-
-	/*
-	 * Grab the list lock to prevent any new clks from being registered
-	 * or unregistered until clk_pm_runtime_put_all().
-	 */
-	mutex_lock(&clk_rpm_list_lock);
-
-	/*
-	 * Runtime PM "get" all the devices that are needed for the clks
-	 * currently registered. Do this without holding the prepare_lock, to
-	 * avoid the deadlock.
-	 */
-	hlist_for_each_entry(core, &clk_rpm_list, rpm_node) {
-		ret = clk_pm_runtime_get(core);
-		if (ret) {
-			failed = core;
-			pr_err("clk: Failed to runtime PM get '%s' for clk '%s'\n",
-			       dev_name(failed->dev), failed->name);
-			goto err;
-		}
-	}
-
-	return 0;
-
-err:
-	hlist_for_each_entry(core, &clk_rpm_list, rpm_node) {
-		if (core == failed)
-			break;
-
-		clk_pm_runtime_put(core);
-	}
-	mutex_unlock(&clk_rpm_list_lock);
-
-	return ret;
-}
-
-/**
- * clk_pm_runtime_put_all() - Runtime "put" all clk provider devices
- *
- * Put the runtime PM references taken in clk_pm_runtime_get_all() and release
- * the 'clk_rpm_list_lock'.
- */
-static void clk_pm_runtime_put_all(void)
-{
-	struct clk_core *core;
-
-	hlist_for_each_entry(core, &clk_rpm_list, rpm_node)
-		clk_pm_runtime_put(core);
-	mutex_unlock(&clk_rpm_list_lock);
-}
-
-static void clk_pm_runtime_init(struct clk_core *core)
-{
-	struct device *dev = core->dev;
-
-	if (dev && pm_runtime_enabled(dev)) {
-		core->rpm_enabled = true;
-
-		mutex_lock(&clk_rpm_list_lock);
-		hlist_add_head(&core->rpm_node, &clk_rpm_list);
-		mutex_unlock(&clk_rpm_list_lock);
-	}
 }
 
 /***           locking             ***/
@@ -513,9 +429,6 @@ static struct clk_core *clk_core_get(struct clk_core *core, u8 p_index)
 
 	if (IS_ERR(hw))
 		return ERR_CAST(hw);
-
-	if (!hw)
-		return NULL;
 
 	return hw->core;
 }

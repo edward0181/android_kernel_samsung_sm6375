@@ -1470,9 +1470,6 @@ dcn10_set_output_transfer_func(struct pipe_ctx *pipe_ctx,
 {
 	struct dpp *dpp = pipe_ctx->plane_res.dpp;
 
-	if (!stream)
-		return false;
-
 	if (dpp == NULL)
 		return false;
 
@@ -1495,8 +1492,8 @@ dcn10_set_output_transfer_func(struct pipe_ctx *pipe_ctx,
 	} else
 		dpp->funcs->dpp_program_regamma_pwl(dpp, NULL, OPP_REGAMMA_BYPASS);
 
-	if (stream->ctx &&
-	    stream->out_transfer_func) {
+	if (stream != NULL && stream->ctx != NULL &&
+			stream->out_transfer_func != NULL) {
 		log_tf(stream->ctx,
 				stream->out_transfer_func,
 				dpp->regamma_params.hw_points_num);

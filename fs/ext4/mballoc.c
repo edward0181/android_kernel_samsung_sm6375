@@ -1815,9 +1815,6 @@ int ext4_mb_try_best_found(struct ext4_allocation_context *ac,
 		return err;
 
 	ext4_lock_group(ac->ac_sb, group);
-	if (unlikely(EXT4_MB_GRP_BBITMAP_CORRUPT(e4b->bd_info)))
-		goto out;
-
 	max = mb_find_extent(e4b, ex.fe_start, ex.fe_len, &ex);
 
 	if (max > 0) {
@@ -1825,7 +1822,6 @@ int ext4_mb_try_best_found(struct ext4_allocation_context *ac,
 		ext4_mb_use_best_found(ac, e4b);
 	}
 
-out:
 	ext4_unlock_group(ac->ac_sb, group);
 	ext4_mb_unload_buddy(e4b);
 
@@ -1852,10 +1848,12 @@ int ext4_mb_find_by_goal(struct ext4_allocation_context *ac,
 	if (err)
 		return err;
 
-	ext4_lock_group(ac->ac_sb, group);
-	if (unlikely(EXT4_MB_GRP_BBITMAP_CORRUPT(e4b->bd_info)))
-		goto out;
+	if (unlikely(EXT4_MB_GRP_BBITMAP_CORRUPT(e4b->bd_info))) {
+		ext4_mb_unload_buddy(e4b);
+		return 0;
+	}
 
+	ext4_lock_group(ac->ac_sb, group);
 	max = mb_find_extent(e4b, ac->ac_g_ex.fe_start,
 			     ac->ac_g_ex.fe_len, &ex);
 	ex.fe_logical = 0xDEADFA11; /* debug value */
@@ -1888,7 +1886,6 @@ int ext4_mb_find_by_goal(struct ext4_allocation_context *ac,
 		ac->ac_b_ex = ex;
 		ext4_mb_use_best_found(ac, e4b);
 	}
-out:
 	ext4_unlock_group(ac->ac_sb, group);
 	ext4_mb_unload_buddy(e4b);
 
@@ -3705,16 +3702,10 @@ ext4_mb_new_inode_pa(struct ext4_allocation_context *ac)
 			.fe_len = ac->ac_g_ex.fe_len,
 		};
 		loff_t orig_goal_end = extent_logical_end(sbi, &ex);
-		loff_t o_ex_end = extent_logical_end(sbi, &ac->ac_o_ex);
 
-		/*
-		 * We can't allocate as much as normalizer wants, so we try
-		 * to get proper lstart to cover the original request, except
-		 * when the goal doesn't cover the original request as below:
-		 *
-		 * orig_ex:2045/2055(10), isize:8417280 -> normalized:0/2048
-		 * best_ex:0/200(200) -> adjusted: 1848/2048(200)
-		 */
+		/* we can't allocate as much as normalizer wants.
+		 * so, found space must get proper lstart
+		 * to cover original request */
 		BUG_ON(ac->ac_g_ex.fe_logical > ac->ac_o_ex.fe_logical);
 		BUG_ON(ac->ac_g_ex.fe_len < ac->ac_o_ex.fe_len);
 
@@ -3726,7 +3717,7 @@ ext4_mb_new_inode_pa(struct ext4_allocation_context *ac)
 		 * 1. Check if best ex can be kept at end of goal and still
 		 *    cover original start
 		 * 2. Else, check if best ex can be kept at start of goal and
-		 *    still cover original end
+		 *    still cover original start
 		 * 3. Else, keep the best ex at start of original request.
 		 */
 		ex.fe_len = ac->ac_b_ex.fe_len;
@@ -3736,7 +3727,7 @@ ext4_mb_new_inode_pa(struct ext4_allocation_context *ac)
 			goto adjust_bex;
 
 		ex.fe_logical = ac->ac_g_ex.fe_logical;
-		if (o_ex_end <= extent_logical_end(sbi, &ex))
+		if (ac->ac_o_ex.fe_logical < extent_logical_end(sbi, &ex))
 			goto adjust_bex;
 
 		ex.fe_logical = ac->ac_o_ex.fe_logical;
@@ -3744,6 +3735,7 @@ adjust_bex:
 		ac->ac_b_ex.fe_logical = ex.fe_logical;
 
 		BUG_ON(ac->ac_o_ex.fe_logical < ac->ac_b_ex.fe_logical);
+		BUG_ON(ac->ac_o_ex.fe_len > ac->ac_b_ex.fe_len);
 		BUG_ON(extent_logical_end(sbi, &ex) > orig_goal_end);
 	}
 
@@ -5216,16 +5208,11 @@ __acquires(bitlock)
 static ext4_grpblk_t ext4_last_grp_cluster(struct super_block *sb,
 					   ext4_group_t grp)
 {
-	unsigned long nr_clusters_in_group;
-
-	if (grp < (ext4_get_groups_count(sb) - 1))
-		nr_clusters_in_group = EXT4_CLUSTERS_PER_GROUP(sb);
-	else
-		nr_clusters_in_group = (ext4_blocks_count(EXT4_SB(sb)->s_es) -
-					ext4_group_first_block_no(sb, grp))
-				       >> EXT4_CLUSTER_BITS(sb);
-
-	return nr_clusters_in_group - 1;
+	if (grp < ext4_get_groups_count(sb))
+		return EXT4_CLUSTERS_PER_GROUP(sb) - 1;
+	return (ext4_blocks_count(EXT4_SB(sb)->s_es) -
+		ext4_group_first_block_no(sb, grp) - 1) >>
+					EXT4_CLUSTER_BITS(sb);
 }
 
 static bool ext4_trim_interrupted(void)
@@ -5237,15 +5224,13 @@ static int ext4_try_to_trim_range(struct super_block *sb,
 		struct ext4_buddy *e4b, ext4_grpblk_t start,
 		ext4_grpblk_t max, ext4_grpblk_t minblocks)
 {
-	ext4_grpblk_t next, count, free_count, last, origin_start;
+	ext4_grpblk_t next, count, free_count;
 	bool set_trimmed = false;
 	void *bitmap;
 
-	last = ext4_last_grp_cluster(sb, e4b->bd_group);
 	bitmap = e4b->bd_bitmap;
-	if (start == 0 && max >= last)
+	if (start == 0 && max >= ext4_last_grp_cluster(sb, e4b->bd_group))
 		set_trimmed = true;
-	origin_start = start;
 	start = max(e4b->bd_info->bb_first_free, start);
 	count = 0;
 	free_count = 0;
@@ -5254,10 +5239,7 @@ static int ext4_try_to_trim_range(struct super_block *sb,
 		start = mb_find_next_zero_bit(bitmap, max + 1, start);
 		if (start > max)
 			break;
-
-		next = mb_find_next_bit(bitmap, last + 1, start);
-		if (origin_start == 0 && next >= last)
-			set_trimmed = true;
+		next = mb_find_next_bit(bitmap, max + 1, start);
 
 		if ((next - start) >= minblocks) {
 			int ret = ext4_trim_extent(sb, start, next - start, e4b);
